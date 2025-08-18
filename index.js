@@ -89,7 +89,6 @@ async function convertToSticker(buffer, format) {
 
 // Inicia o bot
 async function startBot() {
-  // Usa estado em memória
   const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, "auth_info"));
 
   const sock = makeWASocket({
@@ -112,13 +111,43 @@ async function startBot() {
 
     if (text) {
       const low = text.toLowerCase();
-      if (low === "oi") await sock.sendMessage(from, { text: "Oi 👋 tudo bem?" });
-      else if (low === "reset") await sock.sendMessage(from, { text: "Bot resetado ✅" });
+
+      if (low === "oi") {
+        await sock.sendMessage(from, { text: "Oi 👋 tudo bem?" });
+      } 
+      else if (low === "reset") {
+        await sock.sendMessage(from, { text: "Bot resetado ✅" });
+      } 
       else if (low === "/ping") {
-      const start = Date.now();
-      const sent = await sock.sendMessage(from, { text: "pong 🏓" });
-      const latency = Date.now() - start;
-      await sock.sendMessage(from, { text: `⏱ Latência: ${latency}ms` }, { quoted: sent });
+        const start = Date.now();
+        const sent = await sock.sendMessage(from, { text: "pong 🏓" });
+        const latency = Date.now() - start;
+        await sock.sendMessage(from, { text: `⏱ Latência: ${latency}ms` }, { quoted: sent });
+      } 
+      else if (low === "/dados") {
+        const roll = Math.floor(Math.random() * 6) + 1;
+        await sock.sendMessage(from, { text: `🎲 Você tirou: ${roll}` });
+      } 
+      else if (low === "/caracoroa") {
+        const flip = Math.random() < 0.5 ? "Cara 🪙" : "Coroa 🪙";
+        await sock.sendMessage(from, { text: `Resultado: ${flip}` });
+      } 
+      else if (low === "/help") {
+        const helpText = `
+📖 *Menu de Comandos do Bot*
+
+🔧 Básicos
+- /ping → Testa conexão
+- /reset → Reinicia o bot
+
+😂 Diversão
+- /dados → Joga um dado 🎲
+- /caracoroa → Moeda cara/coroa 🪙
+
+📂 Mídia
+- Envie imagem ou vídeo para virar sticker
+`;
+        await sock.sendMessage(from, { text: helpText });
       }
     }
 
@@ -142,13 +171,13 @@ async function startBot() {
     const { qr, connection, lastDisconnect } = update;
 
     if (qr) {
-      qrGlobal = await QRCode.toDataURL(qr); // converte QR para imagem base64
+      qrGlobal = await QRCode.toDataURL(qr);
       console.log("📱 QR code gerado - acesse /qrcode para escanear");
     }
 
     if (connection === "open") {
       console.log("✅ Bot conectado!");
-      qrGlobal = null; // QR não é mais necessário
+      qrGlobal = null;
     }
 
     if (connection === "close") {
