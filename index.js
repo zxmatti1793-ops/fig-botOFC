@@ -115,7 +115,7 @@ async function startBot() {
       if (low === "oi") {
         await sock.sendMessage(from, { text: "Oi 👋 tudo bem?" });
       } 
-      else if (low === "reset") {
+      else if (low === "/reset") {
         await sock.sendMessage(from, { text: "Bot resetado ✅" });
       } 
       else if (low === "/ping") {
@@ -198,3 +198,4 @@ app.listen(PORT, () => {
     process.exit(1);
   });
 });
+
