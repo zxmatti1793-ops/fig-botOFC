@@ -42,23 +42,6 @@ function runFfmpeg(args) {
   });
 }
 
-// Pega duração de um vídeo
-function getVideoDuration(filePath) {
-  return new Promise((resolve, reject) => {
-    const ff = spawn(ffmpeg, ["-i", filePath], { stdio: ["ignore", "pipe", "pipe"] });
-    let stderr = "";
-    ff.stderr.on("data", (d) => (stderr += d.toString()));
-    ff.on("close", () => {
-      const match = stderr.match(/Duration: (\d+):(\d+):(\d+\.\d+)/);
-      if (!match) return resolve(0);
-      const [, hh, mm, ss] = match;
-      const dur = parseInt(hh) * 3600 + parseInt(mm) * 60 + parseFloat(ss);
-      resolve(dur);
-    });
-    ff.on("error", reject);
-  });
-}
-
 // Converte buffer -> sticker .webp
 async function convertToSticker(buffer, format) {
   const id = Date.now();
@@ -70,36 +53,28 @@ async function convertToSticker(buffer, format) {
 
   fs.writeFileSync(input, buffer);
 
-  let duration = 0;
-  if (format === "mp4") {
-    duration = await getVideoDuration(input);
+  let args;
+
+  if (format === "jpg" || format === "jpeg" || format === "png") {
+    // Imagem -> sticker normal
+    args = [
+      "-y",
+      "-i", input,
+      "-vf",
+      "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000",
+      output,
+    ];
+  } else if (format === "mp4") {
+    // Vídeo -> pega apenas 1 frame e transforma em sticker estático
+    args = [
+      "-y",
+      "-i", input,
+      "-vframes", "1", // só 1 frame (imagem)
+      "-vf",
+      "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000",
+      output,
+    ];
   }
-
-  const maxDuration = 6;
-  const finalDuration = duration > maxDuration ? maxDuration : duration;
-
-  const args =
-    format === "jpg" || format === "jpeg" || format === "png"
-      ? [
-          "-y",
-          "-i", input,
-          "-vf",
-          "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000",
-          output,
-        ]
-      : [
-          "-y",
-          "-i", input,
-          "-vf",
-          "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,fps=20",
-          "-t", `${finalDuration || maxDuration}`,
-          "-c:v", "libwebp",
-          "-q:v", "50",
-          "-loop", "0",
-          "-an",
-          "-vsync", "0",
-          output,
-        ];
 
   await runFfmpeg(args);
   const stickerBuffer = fs.readFileSync(output);
@@ -138,6 +113,7 @@ async function startBot() {
       const low = text.toLowerCase();
       if (low === "oi") await sock.sendMessage(from, { text: "Oi 👋 tudo bem?" });
       else if (low === "reset") await sock.sendMessage(from, { text: "Bot resetado ✅" });
+      else await sock.sendMessage(from, { text: `Você disse: "${text}"` });
     }
 
     // Imagem -> sticker
@@ -147,7 +123,7 @@ async function startBot() {
       await sock.sendMessage(from, { sticker });
     }
 
-    // Vídeo -> sticker
+    // Vídeo -> sticker (estático, só 1 frame)
     if (type === "videoMessage") {
       const buffer = await downloadMediaMessage(msg, "buffer");
       const sticker = await convertToSticker(buffer, "mp4");
