@@ -53,28 +53,28 @@ async function convertToSticker(buffer, format) {
 
   fs.writeFileSync(input, buffer);
 
-  let args;
-
-  if (format === "jpg" || format === "jpeg" || format === "png") {
-    // Imagem -> sticker normal
-    args = [
-      "-y",
-      "-i", input,
-      "-vf",
-      "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000",
-      output,
-    ];
-  } else if (format === "mp4") {
-    // Vídeo -> pega apenas 1 frame e transforma em sticker estático
-    args = [
-      "-y",
-      "-i", input,
-      "-vframes", "1", // só 1 frame (imagem)
-      "-vf",
-      "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000",
-      output,
-    ];
-  }
+  const args =
+    format === "jpg" || format === "jpeg" || format === "png"
+      ? ["-y", "-i", input, "-vf", "scale=512:512", output]
+      : [
+          "-y",
+          "-i",
+          input,
+          "-vf",
+          "scale=512:512:force_original_aspect_ratio=decrease,fps=15",
+          "-t",
+          "6",
+          "-c:v",
+          "libwebp",
+          "-q:v",
+          "50",
+          "-loop",
+          "0",
+          "-an",
+          "-vsync",
+          "0",
+          output,
+        ];
 
   await runFfmpeg(args);
   const stickerBuffer = fs.readFileSync(output);
@@ -89,6 +89,7 @@ async function convertToSticker(buffer, format) {
 
 // Inicia o bot
 async function startBot() {
+  // Usa estado em memória
   const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, "auth_info"));
 
   const sock = makeWASocket({
@@ -123,7 +124,7 @@ async function startBot() {
       await sock.sendMessage(from, { sticker });
     }
 
-    // Vídeo -> sticker (estático, só 1 frame)
+    // Vídeo -> sticker
     if (type === "videoMessage") {
       const buffer = await downloadMediaMessage(msg, "buffer");
       const sticker = await convertToSticker(buffer, "mp4");
@@ -136,13 +137,13 @@ async function startBot() {
     const { qr, connection, lastDisconnect } = update;
 
     if (qr) {
-      qrGlobal = await QRCode.toDataURL(qr);
+      qrGlobal = await QRCode.toDataURL(qr); // converte QR para imagem base64
       console.log("📱 QR code gerado - acesse /qrcode para escanear");
     }
 
     if (connection === "open") {
       console.log("✅ Bot conectado!");
-      qrGlobal = null;
+      qrGlobal = null; // QR não é mais necessário
     }
 
     if (connection === "close") {
