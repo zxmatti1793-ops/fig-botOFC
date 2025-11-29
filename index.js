@@ -2,11 +2,10 @@ import express from "express";
 import {
   makeWASocket,
   DisconnectReason,
-  downloadMediaMessage
-  // Removido useMultiFileAuthState
+  downloadMediaMessage,
+  useMultiFileAuthState // Reintroduzido para carregar um estado vazio
 } from "@whiskeysockets/baileys";
-// Importação para gerenciar estado em memória (necessário para o Render Free)
-import { makeInMemoryStore } from "@adiwajshing/baileys-store"; 
+// O pacote @adiwajshing/baileys-store FOI REMOVIDO
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -23,6 +22,9 @@ const PORT = process.env.PORT || 3000;
 
 // Variável global para o QR code
 let qrGlobal = null;
+// Caminho para o diretório de credenciais (usado apenas para carregar estado vazio)
+const AUTH_FILE_PATH = path.join(__dirname, "auth_info_mem");
+
 
 // --- Endpoint HTTP ---
 app.get("/", (_req, res) => res.send("✅ Bot ativo"));
@@ -38,17 +40,13 @@ app.get("/qrcode", async (_req, res) => {
 });
 
 // --- Funções de Utilitários ---
-
-// Util: rodar ffmpeg via ffmpeg-static
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
-    // Usamos 'inherit' para ver a saída do ffmpeg no log, útil para debug
     const p = spawn(ffmpeg, args, { stdio: "inherit" }); 
     p.on("close", (code) => (code === 0 ? resolve() : reject(new Error("ffmpeg exited " + code))));
   });
 }
 
-// Converte buffer -> sticker .webp
 async function convertToSticker(buffer, format) {
   const id = Date.now();
   const tmpDir = path.join(__dirname, "tmp");
@@ -59,10 +57,9 @@ async function convertToSticker(buffer, format) {
 
   fs.writeFileSync(input, buffer);
 
-  // Argumentos do ffmpeg para imagem e vídeo
   const args =
     format === "jpg" || format === "jpeg" || format === "png"
-      ? ["-y", "-i", input, "-vf", "scale=512:512", output] // Imagem estática
+      ? ["-y", "-i", input, "-vf", "scale=512:512", output]
       : [
           "-y",
           "-i",
@@ -80,13 +77,12 @@ async function convertToSticker(buffer, format) {
           "-an",
           "-vsync",
           "0",
-          output, // Vídeo animado (até 6s)
+          output,
         ];
 
   await runFfmpeg(args);
   const stickerBuffer = fs.readFileSync(output);
 
-  // Limpa arquivos temporários
   try {
     fs.unlinkSync(input);
     fs.unlinkSync(output);
@@ -97,21 +93,20 @@ async function convertToSticker(buffer, format) {
 
 // --- Inicia o Bot ---
 async function startBot() {
-  // 1. Cria um store em memória - O estado da sessão será mantido SOMENTE enquanto o processo estiver ativo
-  const store = makeInMemoryStore({});
+  // Use useMultiFileAuthState apenas para carregar um estado vazio/novo
+  // NÃO salvaremos as credenciais, garantindo novo QR em cada reinício.
+  const { state } = await useMultiFileAuthState(AUTH_FILE_PATH);
 
   const sock = makeWASocket({
     printQRInTerminal: false,
-    auth: store.state, // Passa o estado da memória
+    auth: state, // Passa o estado (vazio ou carregado)
     browser: ["RenderBot", "Chrome", "1.0"],
-    // Adicionado tratamento de reconexão automática.
-    // Em ambientes instáveis, a conexão fecha e reabre com frequência.
-    // O Baileys tenta reconectar usando as credenciais que estão na memória.
-    shouldIgnoreJid: (jid) => jid === "status@broadcast", // Ignorar status do WhatsApp
   });
   
-  // 2. Liga o store ao socket para que o Baileys gerencie os dados do chat na memória
-  store.bind(sock.ev);
+  // NOTE: removemos sock.ev.on("creds.update", saveCreds);
+  // Isso impede que as credenciais sejam salvas no disco,
+  // mantendo o bot funcional no Render Free, mas exigindo um novo QR
+  // a cada reinicialização do contêiner.
 
   // Mensagens
   sock.ev.on("messages.upsert", async ({ messages }) => {
@@ -156,19 +151,18 @@ async function startBot() {
     const { qr, connection, lastDisconnect } = update;
 
     if (qr) {
-      qrGlobal = await QRCode.toDataURL(qr); // converte QR para imagem base64
+      qrGlobal = await QRCode.toDataURL(qr);
       console.log("📱 QR code gerado - acesse /qrcode para escanear");
     }
 
     if (connection === "open") {
       console.log("✅ Bot conectado!");
-      qrGlobal = null; // QR não é mais necessário
+      qrGlobal = null;
     }
 
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode || 0;
       
-      // Apenas tenta reconectar se não foi um logout explícito ou um erro irrecuperável (como o 405)
       const shouldReconnect = 
         statusCode !== DisconnectReason.loggedOut &&
         statusCode !== 405; 
@@ -176,12 +170,16 @@ async function startBot() {
       console.log("🔌 Conexão fechada", { statusCode, shouldReconnect });
       
       if (shouldReconnect) {
-        // Tenta reconectar (o Baileys fará isso automaticamente na maioria dos casos)
         startBot(); 
       } else {
-        // Se desconectou (loggedOut ou 405), a sessão em memória é inválida.
-        // Chamamos startBot para gerar um novo Memory Store e forçar um novo QR.
-        console.log("Sessão inválida (Deslogado/405). Gerando novo QR...");
+        // Se desconectou, a sessão em memória é inválida.
+        console.log("Sessão inválida (Deslogado/405). Limpando resquícios da sessão anterior e gerando novo QR...");
+        
+        // Limpa a pasta de auth_info (apenas para ter certeza que não haverá resquícios)
+        if (fs.existsSync(AUTH_FILE_PATH)) {
+            fs.rmSync(AUTH_FILE_PATH, { recursive: true, force: true });
+        }
+        
         startBot(); 
       }
     }
@@ -191,7 +189,6 @@ async function startBot() {
 // Sobe HTTP + inicia bot
 app.listen(PORT, () => {
   console.log(`🌐 HTTP na porta ${PORT}`);
-  // Inicia o bot e captura erros na inicialização
   startBot().catch((e) => {
     console.error("Erro ao iniciar bot:", e);
     process.exit(1);
