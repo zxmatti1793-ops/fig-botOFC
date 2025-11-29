@@ -9,6 +9,7 @@
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.9",
     "express": "^4.19.2",
+    "@adiwajshing/baileys-store": "^1.0.1",
     "ffmpeg-static": "^5.2.0",
     "qrcode": "^1.5.4"
   }
