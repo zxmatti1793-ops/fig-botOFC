@@ -21,6 +21,12 @@ const PORT = process.env.PORT || 3000;
 // Variável global para o QR code
 let qrGlobal = null;
 
+// Guarda referência do socket atual e controle de reconexão
+let currentSock = null;
+let reconnectAttempts = 0;
+const RECONNECT_MAX = 10; // evita looping infinito
+const BASE_RECONNECT_DELAY = 3000; // ms
+
 // Healthchecks
 app.get("/", (_req, res) => res.send("✅ Bot ativo"));
 app.get("/healthz", (_req, res) => res.send("ok"));
@@ -39,6 +45,7 @@ function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
     const p = spawn(ffmpeg, args, { stdio: "inherit" });
     p.on("close", (code) => (code === 0 ? resolve() : reject(new Error("ffmpeg exited " + code))));
+    p.on("error", (err) => reject(err));
   });
 }
 
@@ -46,7 +53,7 @@ function runFfmpeg(args) {
 async function convertToSticker(buffer, format) {
   const id = Date.now();
   const tmpDir = path.join(__dirname, "tmp");
-  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir);
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
   const input = path.join(tmpDir, `in-${id}.${format}`);
   const output = path.join(tmpDir, `st-${id}.webp`);
@@ -82,58 +89,96 @@ async function convertToSticker(buffer, format) {
   try {
     fs.unlinkSync(input);
     fs.unlinkSync(output);
-  } catch {}
+  } catch (e) {
+    // ignore
+  }
 
   return stickerBuffer;
 }
 
+// Fecha socket anterior com segurança
+async function safeCloseSocket() {
+  try {
+    if (currentSock && currentSock.end) {
+      await currentSock.end();
+    } else if (currentSock && currentSock.close) {
+      await currentSock.close();
+    }
+  } catch (e) {
+    // ignore
+  } finally {
+    currentSock = null;
+  }
+}
+
 // Inicia o bot
 async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, "auth_info"));
+  // Se já estiver iniciando/rodando, não criar outra instância
+  if (currentSock) {
+    console.log("Já existe uma instância do bot rodando. Abortando nova inicialização.");
+    return;
+  }
 
+  const authDir = path.join(__dirname, "auth_info");
+  // garantir pasta existe (useMultiFileAuthState cria quando necessário)
+  if (!fs.existsSync(authDir)) {
+    fs.mkdirSync(authDir, { recursive: true });
+  }
+
+  const { state, saveCreds } = await useMultiFileAuthState(authDir);
+
+  // Opções ajustadas: browser realista + versão do WhatsApp Web
   const sock = makeWASocket({
     printQRInTerminal: false,
     auth: state,
-    browser: ["Safari", "MacOS", "14.1.2"],
+    browser: ["Chrome", "Windows", "10.0"], // user-agent "realista"
+    version: [2, 2411, 7], // ajuste para uma versão compatível do Web (pode atualizar se necessário)
+    // evita sincronizar histórico grande (opcional)
+    syncFullHistory: false,
   });
 
+  // manter referência global
+  currentSock = sock;
+
+  // salvar credenciais quando atualizarem
   sock.ev.on("creds.update", saveCreds);
 
   // Mensagens
   sock.ev.on("messages.upsert", async ({ messages }) => {
-    const msg = messages?.[0];
-    if (!msg || !msg.message || msg.key.fromMe) return;
+    try {
+      const msg = messages?.[0];
+      if (!msg || !msg.message || msg.key.fromMe) return;
 
-    const from = msg.key.remoteJid;
-    const m = msg.message;
-    const type = Object.keys(m)[0];
-    const text = (m.conversation || m.extendedTextMessage?.text || "").trim();
+      const from = msg.key.remoteJid;
+      const m = msg.message;
+      const type = Object.keys(m)[0];
+      const text = (m.conversation || m.extendedTextMessage?.text || "").trim();
 
-    if (text) {
-      const low = text.toLowerCase();
+      if (text) {
+        const low = text.toLowerCase();
 
-      if (low === "oi") {
-        await sock.sendMessage(from, { text: "Oi 👋 tudo bem?" });
-      } 
-      else if (low === "/reset") {
-        await sock.sendMessage(from, { text: "Bot resetado ✅" });
-      } 
-      else if (low === "/ping") {
-        const start = Date.now();
-        const sent = await sock.sendMessage(from, { text: "pong 🏓" });
-        const latency = Date.now() - start;
-        await sock.sendMessage(from, { text: `⏱ Latência: ${latency}ms` }, { quoted: sent });
-      } 
-      else if (low === "/dados") {
-        const roll = Math.floor(Math.random() * 6) + 1;
-        await sock.sendMessage(from, { text: `🎲 Você tirou: ${roll}` });
-      } 
-      else if (low === "/caracoroa") {
-        const flip = Math.random() < 0.5 ? "Cara 🪙" : "Coroa 🪙";
-        await sock.sendMessage(from, { text: `Resultado: ${flip}` });
-      } 
-      else if (low === "/help") {
-        const helpText = `
+        if (low === "oi") {
+          await sock.sendMessage(from, { text: "Oi 👋 tudo bem?" });
+        } 
+        else if (low === "/reset") {
+          await sock.sendMessage(from, { text: "Bot resetado ✅" });
+        } 
+        else if (low === "/ping") {
+          const start = Date.now();
+          const sent = await sock.sendMessage(from, { text: "pong 🏓" });
+          const latency = Date.now() - start;
+          await sock.sendMessage(from, { text: `⏱ Latência: ${latency}ms` }, { quoted: sent });
+        } 
+        else if (low === "/dados") {
+          const roll = Math.floor(Math.random() * 6) + 1;
+          await sock.sendMessage(from, { text: `🎲 Você tirou: ${roll}` });
+        } 
+        else if (low === "/caracoroa") {
+          const flip = Math.random() < 0.5 ? "Cara 🪙" : "Coroa 🪙";
+          await sock.sendMessage(from, { text: `Resultado: ${flip}` });
+        } 
+        else if (low === "/help") {
+          const helpText = `
 📖 *Menu de Comandos do Bot*
 
 🔧 Básicos
@@ -147,47 +192,75 @@ async function startBot() {
 📂 Mídia
 - Envie imagem ou vídeo para virar sticker
 `;
-        await sock.sendMessage(from, { text: helpText });
+          await sock.sendMessage(from, { text: helpText });
+        }
       }
-    }
 
-    // Imagem -> sticker
-    if (type === "imageMessage") {
-      const buffer = await downloadMediaMessage(msg, "buffer");
-      const sticker = await convertToSticker(buffer, "jpg");
-      await sock.sendMessage(from, { sticker });
-    }
+      // Imagem -> sticker
+      if (type === "imageMessage") {
+        const buffer = await downloadMediaMessage(msg, "buffer");
+        const sticker = await convertToSticker(buffer, "jpg");
+        await sock.sendMessage(from, { sticker });
+      }
 
-    // Vídeo -> sticker
-    if (type === "videoMessage") {
-      const buffer = await downloadMediaMessage(msg, "buffer");
-      const sticker = await convertToSticker(buffer, "mp4");
-      await sock.sendMessage(from, { sticker });
+      // Vídeo -> sticker
+      if (type === "videoMessage") {
+        const buffer = await downloadMediaMessage(msg, "buffer");
+        const sticker = await convertToSticker(buffer, "mp4");
+        await sock.sendMessage(from, { sticker });
+      }
+    } catch (err) {
+      console.error("Erro ao processar mensagem:", err);
     }
   });
 
   // Conexão
   sock.ev.on("connection.update", async (update) => {
-    const { qr, connection, lastDisconnect } = update;
+    try {
+      const { qr, connection, lastDisconnect } = update;
 
-    if (qr) {
-      qrGlobal = await QRCode.toDataURL(qr);
-      console.log("📱 QR code gerado - acesse /qrcode para escanear");
-    }
+      if (qr) {
+        qrGlobal = await QRCode.toDataURL(qr);
+        console.log("📱 QR code gerado - acesse /qrcode para escanear");
+      }
 
-    if (connection === "open") {
-      console.log("✅ Bot conectado!");
-      qrGlobal = null;
-    }
+      if (connection === "open") {
+        console.log("✅ Bot conectado!");
+        qrGlobal = null;
+        reconnectAttempts = 0; // zerar tentativas
+      }
 
-    if (connection === "close") {
-      const statusCode = lastDisconnect?.error?.output?.statusCode || 0;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      console.log("🔌 Conexão fechada", { statusCode, shouldReconnect });
-      if (shouldReconnect) startBot();
-      else console.log("Deslogado. Escaneie o QR novamente.");
+      if (connection === "close") {
+        const statusCode = lastDisconnect?.error?.output?.statusCode || 0;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        console.log("🔌 Conexão fechada", { statusCode, shouldReconnect });
+
+        // fechar socket atual e limpar referência
+        await safeCloseSocket();
+
+        if (shouldReconnect && reconnectAttempts < RECONNECT_MAX) {
+          reconnectAttempts += 1;
+          const delay = BASE_RECONNECT_DELAY * reconnectAttempts; // backoff linear simples
+          console.log(`🔄 Tentando reconectar em ${delay}ms (tentativa ${reconnectAttempts}/${RECONNECT_MAX})`);
+          setTimeout(() => startBot().catch((e) => console.error("Erro no restart:", e)), delay);
+        } else if (!shouldReconnect) {
+          console.log("❌ Deslogado permanentemente. Delete a pasta auth_info e escaneie o QR novamente.");
+        } else {
+          console.log("❌ Excedeu tentativas de reconexão. Reinicie manualmente se quiser tentar novamente.");
+        }
+      }
+    } catch (e) {
+      console.error("Erro no event connection.update:", e);
     }
   });
+
+  // tratar erros do socket (só log)
+  sock.ev.on("error", (err) => {
+    console.error("Erro no socket:", err);
+  });
+
+  // retornar o socket pra possível uso futuro
+  return sock;
 }
 
 // Sobe HTTP + inicia bot
@@ -199,4 +272,12 @@ app.listen(PORT, () => {
   });
 });
 
-
+// limpar tmp ao finalizar processo (opcional)
+process.on("exit", () => {
+  try {
+    const tmpDir = path.join(__dirname, "tmp");
+    if (fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  } catch {}
+});
