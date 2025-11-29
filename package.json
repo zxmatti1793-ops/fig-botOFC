@@ -1,0 +1,13 @@
+{
+  "name": "whatsapp-bot-render",
+  "type": "module",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "express": "^5.1.0",
+    "ffmpeg-static": "*",
+    "qrcode": "*"
+  },
+  "scripts": {
+    "start": "node index.js"
+  }
+}
