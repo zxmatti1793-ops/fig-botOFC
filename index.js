@@ -94,7 +94,7 @@ async function startBot() {
   const sock = makeWASocket({
     printQRInTerminal: false,
     auth: state,
-    browser: ["RenderBot", "Chrome", "1.0"],
+    browser: ["Safari", "MacOS", "14.1.2"],
   });
 
   sock.ev.on("creds.update", saveCreds);
@@ -198,4 +198,5 @@ app.listen(PORT, () => {
     process.exit(1);
   });
 });
+
 
